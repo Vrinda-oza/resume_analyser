@@ -1,0 +1,211 @@
+from flask import Flask,render_template,request,redirect,session,flash
+
+import models
+from db import engine, Base,SessionLocal
+from models import User, Reports
+import PyPDF2
+import docx
+import json
+from ai import analyze_resume
+
+app = Flask(__name__)
+app.secret_key="secret123"
+
+Base.metadata.create_all(bind=engine)
+
+@app.route("/")
+def home():
+    if "user"in session:
+        return redirect("/dashboard")
+    return redirect("/login")
+
+
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    db = SessionLocal()
+    if request.method == "POST":
+        email = request.form.get("email")
+        password = request.form.get("password")
+        confirm_password = request.form.get("confirm_password")  # Get confirm field
+
+        # Check 1: Verify password length
+        if len(password) < 6:
+            flash("Password must be at least 6 characters long.", "error")
+            return redirect("/signup")
+
+        # Check 2: Verify both passwords match
+        if password != confirm_password:
+            flash("Passwords do not match!", "error")
+            return redirect("/signup")
+
+        # Check 3: Verify if user already exists
+        existing_user = db.query(models.User).filter_by(email=email).first()
+        if existing_user:
+            flash("User already exists with that email.", "error")
+            return redirect("/signup")
+
+        # If all checks pass, save user
+        user = models.User(email=email, password=password)
+        db.add(user)
+        db.commit()
+
+        flash("Account created successfully! Please log in.", "success")
+        return redirect("/login")
+
+    return render_template("signup.html")
+
+@app.route("/login",methods=["GET","POST"])
+def login():
+    db = SessionLocal()
+
+    if request.method == "POST":
+        email = request.form.get("email")
+        password = request.form.get("password")
+        user = db.query(models.User).filter_by(email=email, password=password).first()
+
+        if user:
+            session["user"] = user.email
+            return redirect("/dashboard")
+        else:
+            # Flashes the error and reloads the login template safely
+            flash("Invalid Email or Password", "error")
+            return redirect("/login")
+
+    return render_template("login.html")
+
+@app.route("/dashboard",methods=["GET","POST"])
+def dashboard():
+    if "user" not in session:
+        return redirect("/login")
+
+    result=None
+
+    if request.method == "POST":
+         user_goal=request.form.get("role")
+         resume_text=request.form.get("resume")
+
+         file=request.files.get("file")
+
+         if file and file.filename != "":
+            if file.filename.endswith(".pdf"):
+                try:
+                    pdf_reader = PyPDF2.PdfReader(file)
+                    text=""
+                    for page in pdf_reader.pages:
+                        text+=page.extract_text() or ""
+                    resume_text=text
+                except Exception as e:
+                    result={"error":f"PDF error:{str(e)}"}
+            elif file.filename.endswith(".docx"):
+                try:
+                    doc = docx.Document(file)
+                    text=""
+                    for para in doc.paragraphs:
+                        text+=para.text+"\n"
+                    resume_text=text
+                except Exception as e:
+                    result={"error":f"DOCX error:{str(e)}"}
+         if resume_text and user_goal:
+            try:
+                result=analyze_resume(resume_text,user_goal)
+                db=SessionLocal()
+                user=db.query(models.User).filter_by(email=session["user"]).first()
+
+                report=models.Reports(
+                user_id=user.id,
+                resume_text=resume_text,
+                result=json.dumps(result)
+                )
+                db.add(report)
+                db.commit()
+            except Exception as e:
+                result={"error":f"AI error:{str(e)}"}
+    return render_template("dashboard.html",
+                                user=session["user"],
+                                result=result)
+@app.route("/history")
+def history():
+    if "user" not in session:
+        return redirect("/login")
+
+    db=SessionLocal()
+    user=db.query(models.User).filter_by(email=session["user"]).first()
+
+    reports=db.query( models.Reports).filter_by(user_id=user.id).all()
+
+    pasred_reports=[]
+    for r in reports:
+        try:
+            pasred_result = json.loads(r.result)
+        except:
+            pasred_result = {
+                "skills": [],
+                "missing_skills": [],
+                "roadmap": [],
+                "interview_questions": []
+            }
+
+            # FIXED: Moved outside the except block so it always appends
+        pasred_reports.append({
+            "id": r.id,
+            "resume": r.resume_text,
+            "result": pasred_result
+        })
+    return render_template("history.html",reports=pasred_reports)
+
+@app.route("/logout")
+def logout():
+    session.pop("user",None)
+    return redirect("/login")
+
+@app.route("/forgot_pwd", methods=["GET", "POST"])
+def forgot_password():
+
+    if request.method == "POST":
+        email = request.form.get("email")
+        new_password = request.form.get("new_password")
+        confirm_password = request.form.get("confirm_password") # Added to capture confirm field
+
+        # Simple verification check
+        if new_password != confirm_password:
+            flash("Passwords do not match!", "error")
+            return redirect("/forgot_pwd")
+
+        db = SessionLocal()
+        user = db.query(models.User).filter_by(email=email).first()
+
+        if user:
+            user.password = new_password
+            db.commit()
+
+            # CHANGE HERE: Flash a success message before redirecting to login
+            flash("Password changed successfully! Please log in.", "success")
+            return redirect("/login")
+
+        else:
+            flash("User not found!", "error")
+            return redirect("/forgot_pwd")
+
+    return render_template("forgot_pwd.html")
+
+
+@app.route("/delete_history/<int:report_id>", methods=["POST"])
+def delete_history(report_id):
+    if "user" not in session:
+        return redirect("/login")
+
+    db = SessionLocal()
+    # 1. Fetch the user to verify ownership
+    user = db.query(models.User).filter_by(email=session["user"]).first()
+
+    # 2. Find the specific report item belonging to this user
+    report = db.query(models.Reports).filter_by(id=report_id, user_id=user.id).first()
+
+    if report:
+        db.delete(report)
+        db.commit()
+
+    return redirect("/history")
+
+if __name__ == "__main__":
+    app.run(debug=True)

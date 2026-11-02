@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="auth-container">
+    <div class="auth-card">
+
+        <h2>Forgot Password &#128274;</h2>
+        <p class="sub-text">
+            Enter your registered email to reset your password
+        </p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="alert-box alert-{{ category }}">
+                 {{ message }}
+              </div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <form method="post">
+
+            <input 
+                type="email" 
+                name="email" 
+                placeholder="Enter Your Registered Email" 
+                required
+            >
+
+            <input 
+                type="password" 
+                name="new_password" 
+                placeholder="Enter New Password" 
+                required
+            >
+
+            <input 
+                type="password" 
+                name="confirm_password" 
+                placeholder="Confirm New Password" 
+                required
+            >
+
+            <button type="submit">
+                Reset Password
+            </button>
+
+        </form>
+
+        <div class="auth-links">
+            <a href="/login">Back to Login</a>
+        </div>
+
+    </div>
+</div>
+
+{% endblock %}
